@@ -19,11 +19,9 @@ jobs:
   # get matrix for ci-jobs
   
   check_breaking_changes:
-    name: 'Check Breaking Changes (${{ matrix.flavor }})'
+    name: 'Check Breaking Changes'
     runs-on: ${{ vars.RUNS_ON }}
     permissions: read-all
-    strategy:
-      matrix: ${{ fromJSON(needs.get_matrix.outputs.matrix) }}
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE so job can access it
       - uses: actions/checkout@v4
