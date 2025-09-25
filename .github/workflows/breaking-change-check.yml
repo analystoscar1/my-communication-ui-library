@@ -17,27 +17,8 @@ concurrency:
 
 jobs:
   # get matrix for ci-jobs
-  get_matrix:
-    name: Load CI Matrix Details
-    runs-on: ${{ vars.RUNS_ON }}
-    permissions: read-all
-    outputs:
-      matrix: ${{ steps.get-matrix.outputs.matrix }}
-    steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE so job can access it
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      # Ensure node version is great enough
-      - name: Use Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 'lts/*'
-      - id: get-matrix
-        run: echo "matrix=$(node ./common/scripts/workflow-read-matrix.mjs)" >> $GITHUB_OUTPUT
-
+  
   check_breaking_changes:
-    needs: get_matrix
     name: 'Check Breaking Changes (${{ matrix.flavor }})'
     runs-on: ${{ vars.RUNS_ON }}
     permissions: read-all
