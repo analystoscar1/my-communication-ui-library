@@ -1,0 +1,151 @@
+# create release branch from pre-release branch
+name: Create release branch from pre-release branch
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Pre-release branch to release from'
+        type: string
+        required: true
+
+# cancel workflow when a newer version of the workflow is triggered on the same github ref
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  create_release:
+    if: ${{ startsWith(github.event.inputs.branch, 'prerelease') }}
+    name: Create release branch
+    runs-on: ${{ vars.RUNS_ON }}
+    permissions: write-all
+    steps:
+      # Check-out repo
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Setup bot information for creating pull request
+      # Here we use the id from the github actions bot: https://api.github.com/users/better-informatics%5Bbot%5D
+      - name: Setup bot git information
+        run: |
+          echo "running generation of release branch from ${{github.event.inputs.branch}}"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+
+      # Check out onto desired branch or tag to create release from
+      - name: Checkout tag/branch
+        run: git checkout ${{ github.event.inputs.branch }}
+
+      # Ensure node version is great enough
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+
+      # Make sure that Rush is installed in run
+      - name: Add rush to run
+        run: npm i -g @microsoft/rush
+
+      # Ensure that node modules are installed
+      - name: Update rush to use node_modules
+        run: rush update
+
+      # get version number from communication react folder
+      - name: Retrieve new version from package.json
+        id: version
+        run: |
+          ver=$(jq -r .version packages/communication-react/package.json)
+          echo version: $ver
+          echo "version=$ver" >> $GITHUB_OUTPUT
+
+      # Create new release branch
+      - name: Hop into new branch
+        id: releasebranch
+        run: |
+          git checkout -b release/${{ steps.version.outputs.version }}
+          echo "releasebranch=release/${{ steps.version.outputs.version }}" >> $GITHUB_OUTPUT
+
+      # After forcing the dependency package versions to that for stable build, we regenerate the
+      # PNPM shrinkwrap file for the *beta* build variant. This is needed because CI workflows
+      # need to first install beta dependencies, even when building for the stable flavor.
+      # When we force the dependencies to their stable variants, we change the versions available
+      # for this default installation, and must update the shrinkwrap file accordingly.
+      # e.g. https://github.com/Azure/communication-ui-library/pull/2441 was needed to unbreak CI
+      # on a stable release branch.
+      - name: Force build flavor to `stable`
+        if: ${{ startsWith(github.event.inputs.branch, 'prerelease-stable') }}
+        run: |
+          node ./common/scripts/force-build-flavor.mjs stable
+          rush update
+
+      - name: Force build flavor to `beta-release`
+        if: ${{ startsWith(github.event.inputs.branch, 'prerelease-beta') }}
+        run: node ./common/scripts/force-build-flavor.mjs beta-release
+
+      # Synchronize the telemetry package versions.
+      - name: Synchronize package version reported to telemetry
+        run: node common/scripts/sync-telemetry-package-version
+
+      # Disabling because Beachball doesn't support disabling custom prompts
+      - name: Disabled - DO THIS MANUALLY! Add changelog
+        run: |
+          echo "This step should be enabled when parameters can be added to the changelog command
+          Previous version of the command: node ./common/scripts/changelog/change.mjs -m 'Create release branch and update SDK versions' --type none"
+
+      # Commit new dependencies
+      - name: Commit changes
+        run: |
+          git add .
+          git commit -m "Selected right flavor sdk's for release branch"
+          git push -u origin ${{ steps.releasebranch.outputs.releasebranch }}
+
+      # Switch flavor when necessary
+      - name: Switch flavor for beta-release build
+        if: ${{ startsWith(github.event.inputs.branch, 'prerelease-beta' )}}
+        run: rush switch-flavor:beta-release
+
+      - name: Build NPM Package
+        if: ${{ startsWith(github.event.inputs.branch, 'prerelease-beta' )}}
+        run: |
+          rush build -t @azure/communication-react
+        id: buildapifiles
+
+      - name: Check for API changes
+        id: API-check
+        run: |
+          if [[ -z $(git status packages/communication-react -s) ]]
+          then
+            echo "hasChanged=false" >> $GITHUB_OUTPUT
+          else
+            echo "hasChanged=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit API File changes
+        if: ${{ startsWith(github.event.inputs.branch, 'prerelease-beta' ) && steps.API-check.outputs.hasChanged == 'true'}}
+        run: |
+          git add packages/**/*.api.md
+          git commit -m 'Update ${{ matrix.flavor }} API files'
+          git push -u origin ${{ steps.releasebranch.outputs.releasebranch }}
+
+      # Checkout back to pre-release branch
+      - name: Hop back to pre-release branch
+        run: git checkout ${{ github.event.inputs.branch }}
+
+      - name: REMOVED - DO THIS MANUALLY! Create pull request for pre-release back to main
+        run: |
+          echo "Creating pull requests by GitHub Action is no longer supported per Microsoft Open Source Security Policy."
+          echo "Please create a pull request manually from ${{ github.event.inputs.branch }} to main."
+          echo "See example: https://github.com/Azure/communication-ui-library/pull/2631"
+
+      # if a stable release bump the package versions to beta.0 numbers for next beta release
+      # otherwise prerelease type isn't shown for beachball changelog
+      - name: Bump versions for pre-release branch if stable release
+        if: ${{ startsWith(github.event.inputs.branch, 'prerelease-stable') }}
+        run: |
+          node common/scripts/bump-beta-release-version.js beta-next
+          rush update
+          git add .
+          git commit -m "Bump package versions to beta.0 for next release"
+          git push
